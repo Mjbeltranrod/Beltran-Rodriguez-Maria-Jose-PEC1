@@ -1,0 +1,377 @@
+---
+title: "PEC 1 - Análisis de Datos Ómicos"
+author: "María José Beltrán"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    latex_engine: xelatex
+  html_document:
+    toc: true
+    df_print: paged
+  word_document:
+    toc: true
+header-includes:
+- \usepackage{booktabs}
+- \usepackage{geometry}
+- \geometry{top=1.5cm, bottom=1.8cm, left=1.5cm, right=1.5cm}
+---
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library(readr)
+library(dplyr)
+library(stringr)
+if (!require(SummarizedExperiment)) BiocManager.install("SummarizedExperiment")
+library(SummarizedExperiment)
+library(summarytools)
+library(stats)
+library(knitr)
+library(kableExtra)
+library(ggplot2)
+library(RColorBrewer)
+library(factoextra)
+library(gridExtra)
+```
+
+# ABSTRACT
+
+Este estudio analiza un conjunto de datos clínicos y de metabolitos de pacientes sometidos a dos tipos de cirugía: bypass y tubular. Se realizó un análisis descriptivo de las variables clínicas (edad, género, tipo de cirugía y grupo de pertenencia), encontrando una muestra predominantemente femenina (69.2%) y con una edad media de 40.8 años. El análisis mostró que la mayoría de los participantes fueron sometidos a bypass (66.7%), y que no hubo valores faltantes en las variables clínicas. Sin embargo, los datos de metabolitos presentaron un 12.6% de valores faltantes, que fueron imputados con el valor cero. El análisis de Componentes Principales (PCA) reveló que el tipo de cirugía fue el principal factor que explicó la variabilidad en los metabolitos, mientras que el grupo de pertenencia no mostró una influencia significativa. Adicionalmente, el análisis de similitud también indicó que las muestras se agrupan principalmente según el tipo de cirugía. Finalmente, se propone una reorganización de los datos de expresión metabólica, sugiriendo un enfoque donde el tiempo se maneje como una variable independiente, lo que facilitaría la observación de cambios temporales en las concentraciones postquirúrgicas.
+
+# OBJETIVOS
+
+El objetivo principal es realizar un análisis exploratorio de datos metabólicos obtenidos a través de un repositorio público. Se pretende extraer algún patrón acerca de la distribución de los mismos que tenga explicación biológia.
+
+# MATERIALES Y MÉTODOS
+
+## Dataset
+
+Se ha seleccionado, a partir del repositorio [nutrimetabolomics/metaboData](https://github.com/nutrimetabolomics/metaboData/tree/main/Datasets) el dataset "2018-MetabotypingPaper". En concreto, se ha elegido este dataset debido a que dispone de la matriz de datos y los metadatos, que es lo que se necesitará para hacer la PEC, en un formato cómodo como csv.
+
+```{r message=FALSE, warning=FALSE}
+metadatos <- read_delim("DataInfo_S013.csv")
+datos <- read_csv("DataValues_S013.csv")
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+datos$...1 <- NULL
+metadatos$...1 <- NULL
+```
+
+Según el archivo "datos", existen 39 muestras o individuos y 695 variables, pero 4 de ellas (las primeras columnas) son "datos clínicos" o información de los individuos y el resto corresponde a la expresión de metabolitos. Cada columna que corresponde a los metabolítos, aparece el nombre del metabolito y T0, T2, T4 o T5, lo que indica que son los mismos metabolitos medidos en 4 puntos en el tiempo. En el archivo "metadatos" se encuentra la información de cada columna de "datos" como de qué tipo es esa columna y donde se puede encontrar más información. Está completo ya que el número de filas de los metadatos coincide con el número de columnas de los datos.
+
+```{r message=FALSE, warning=FALSE}
+# Vamos a guardar en otro dataframe los datos clínicos
+datos_clinicos <- datos[, 1:5]
+
+# Eliminamos esas columnas/filas de ambos archivos
+datos <- datos[, -c(1:5)]
+metadatos <- metadatos[-c(1:5), ]
+
+# Ahora hay 690 variables o medidas de metabolitos. 
+```
+
+Se realizaron ciertas modificaciones a los archivos antes de almacenarlos en el SummarizedExperiment. En concreto, las columnas Group, GENDER y SURGERY de los datos clínicos se convirtieron en factores y se asignó el mismo nombre de fila a los datos clinicos y a los datos de expresión.
+
+```{r message=FALSE, warning=FALSE}
+datos_clinicos <- datos_clinicos %>% 
+  mutate(across(c(SURGERY, GENDER, Group), as.factor))
+
+# Vamos a asignarle nombres a las filas que sean informativos para poder 
+# representar las etiquetas de cada muestra en los análisis posteriores. 
+# Solo vamos a añadir la palabra Sample_ para que no sean números unicamente. 
+rownames(datos_clinicos) <- paste("Sample_", rownames(datos_clinicos), sep = "")
+rownames(datos) <- rownames(datos_clinicos)
+
+```
+
+## SummarizedExperiment
+
+El análisis se llevó a cabo a partir de un SummarizedExperiment. Existen diferencias entre SummarizedExperiment y ExpressionSet. Esta última, está más orientada a los datos de expresión, mientras que SummarizedExperiment puede manejar varios tipos de datos más allá de los de expresión génica. ExpressionSet es más comúnmente utilizado en el análisis de datos de microarrays, aunque no es tan utilizado para RNA-Seq u otros tipos de datos más recientes, al contrario que el SummarizedExperiment. Además, en SummarizedExperiment rowData y colData pueden almacenar una variedad más amplia de información.
+
+Se ultilizó el paquete SummarizedExperiment para la creación del objeto.
+
+```{r message=FALSE, warning=FALSE}
+# Creamos el objeto SummarizedExperiment 
+se <- SummarizedExperiment(
+  assays = list(counts = as.matrix(datos)), # Es necesario que sea una matriz
+  rowData = datos_clinicos,  
+  colData = metadatos     
+)
+
+# Mostramos sus características
+show(se)
+```
+
+Una vez creado el objeto, se procedió con el análisis exploratorio de los datos, incluyendo la comprobación de valores faltantes. Para ello se utilizó el paquete Summarytools de R. La matriz assay fue normalizada mediante logaritmos y posteriormente, se llevó a cabo un análisis de componentes principales (PCA) con el fin de visualizar patrones en la distribución de los datos usando el paquete stats. Para su visualización se utilizó el paquete ggplot2 y RColorBrewer.
+
+Adicionalmente, usando el paquete factorextra, se realizó un análisis de similitud entre muestras donde se llevó a cabo el cálculo de la distancia euclidiana entre las muestras de la matriz assay y se representó en un heatmap. Una matriz de distancias es una representación matemática que mide las diferencias o similitudes entre muestras en un espacio multidimensional. De manera que, valores pequeños indican que las muestras son similares en términos de sus perfiles de expresión génica, mientras que, valores grandes indican diferencias importantes. Con este mismo objetivo se ha realizado un dendrograma adicional al heatmap, utilizando el método “ward.D2". En esteárbol jerárquico se agrupan las muestras según su similitud, indicando, las ramas más cercanas, muestras con perfiles de expresión génica similares, mientras que las más alejadas representan diferencias mayores. Se ha utilizado el paquete factoextra.
+
+# RESULTADOS
+
+## Análisis Exploratorio
+
+```{r message=FALSE, warning=FALSE}
+# Extraemos los datos clínicos y comprobamos si se han almacenado bien.
+datos_clinicos <- as.data.frame(se@elementMetadata@listData)
+
+# Usando el paquete summarytools hacemos una descriptiva básica y rápida de 
+# las variables. (Muestro una imagen y no la salida porque es propia de html. 
+# print(dfSummary(datos_clinicos, method = "render"))
+```
+
+![](Captura%20de%20pantalla%202025-03-25%20220557.png)
+
+El conjunto de datos analizado incluye información sobre sujetos, edad, género, tipo de cirugía y grupo de pertenencia. El análisis descriptivo del conjunto de datos clínicos se representó en una tabla. Esta muestra varias columnas: "Variable" que indica el nombre de la variable y tipo de dato (numérica o factor), "Stats / Values" que muestra los estadísticos descriptivos para variables numéricas (media, desviación estándar, mínimo, máximo, mediana, cuartiles) o categorías disponibles (variables de tipo factor) y "Freqs (% of Valid)" que indica el número de valores únicos en variables numéricas o la distribución de frecuencias y porcentaje para variables categóricas. Además, en la columna "graph" se representa la distribución de los datos en un gráfico de barras y en "Valid" la cantidad total de observaciones sin valores perdidos y su porcentaje sobre el total.
+
+En cuanto al tipo de cirugía (SURGERY), los procedimientos se dividen en dos categorías: bypass y tubular. La mayoría de los sujetos (66.7%) han sido sometidos a un bypass, mientras que el 33.3% restante ha recibido cirugía tubular. La edad (AGE) de los participantes se encuentra entre los 19 y 59 años, con una media de 40.8 años y una mediana de 41. La dispersión en los valores es moderada, con la mitad de los datos concentrados entre los 35 y 46 años. El género (GENDER) de los sujetos está compuesto mayoritariamente por mujeres, quienes representan el 69.2% de la muestra, mientras que los hombres constituyen el 30.8%. Por último, en cuanto a la clasificación por grupos (Group), se identifican dos categorías. La mayor parte de los sujetos (61.5%) pertenece al Grupo 1, mientras que el 38.5% corresponde al Grupo 2.
+
+Ninguna de las variable clínicas presentan valores faltantes.
+
+```{r message=FALSE, warning=FALSE}
+# Ahora vamos a comprobar los valores faltantes en la matriz de expresión.
+# Extraemos la matriz del objeto. 
+assays <- se@assays@data@listData[["counts"]]
+cat("Hay", sum(is.na(assays)), "valores faltantes. \n")
+
+# Calculamos el porcentaje de valores faltantes. 
+cat("El porcentaje de valores faltantes es", (sum(is.na(assays))/length(assays))*100, "\n")
+
+# En este caso, vamos a completar los valores faltantes porque a la hora de hacer 
+# los análisis pueden dar problemas. Añadimos 0 ya que no sabemos
+# porque no estan esos valores. 
+assays[is.na(assays)] <- 0
+cat("Hay", sum(is.na(assays)), "valores faltantes. \n")
+
+# Introducimos la matriz sin valores faltantes al objeto
+assays(se)$counts_sinNA <- assays
+show(se)
+
+```
+
+Por otro lado, los datos de metabolitos, mostraron un 12.60% de valores faltantes, los cuales fueron completados con el valor 0.
+
+```{r fig.height=4, fig.width=7, message=FALSE, warning=FALSE}
+assays <- t(as.data.frame(se@assays@data@listData[["counts_sinNA"]]))
+
+# Creamos un gráfico de barras con boxplot
+boxplot(assays, 
+        xlab = "Muestras", 
+        ylab = "Concentraciones", 
+        cex.lab = 0.8, 
+        horizontal = FALSE, 
+        las = 2, 
+        main = "Distribución de la concentración de metabolitos por muestra", 
+        cex.main = 0.8, 
+        col = rainbow(ncol(assays))) 
+```
+
+Existió mucha variabilidad entre las concentraciones de los metabolitos por cada muestra, lo que justificó la necesidad de normalizar los datos mediante un logaritmo.
+
+```{r fig.height=4, fig.width=7, message=FALSE, warning=FALSE}
+assays <- se@assays@data@listData[["counts_sinNA"]]
+
+# Introducimos el logaritmo de la matriz al objeto
+assays(se)$counts_log <- log(assays)
+assays <- t(se@assays@data@listData[["counts_log"]])
+
+# Volvemos a crear el gráfico de barras
+boxplot(assays, 
+        xlab = "Muestras", 
+        ylab = "log de concentraciones", 
+        cex.lab = 0.8, 
+        horizontal = FALSE, 
+        las = 2, 
+        main = "Distribución de la concentración de metabolitos por muestra", 
+        cex.main = 0.8, 
+        col = rainbow(ncol(assays))) 
+```
+
+## Análisis de Componentes Principales
+
+```{r fig.height=4, fig.width=7, message=FALSE, warning=FALSE}
+# Para hacer el PCA usamos las matriz sin normalizar debido a que al haber 
+# sustituido los valores faltantes por 0 y aplicar el logaritmo, aparecen nuevamente 
+# NAs o valores infinitos. 
+assays <- se@assays@data@listData[["counts_sinNA"]]
+
+# Realizamos el PCA
+pca_obj <- prcomp(assays)  
+
+# Obtenemos la varianza explicada por cada componente 
+var_exp <- (pca_obj$sdev^2) / sum(pca_obj$sdev^2) * 100  
+pca_data <- as.data.frame(pca_obj$x)
+
+# Cargamos los datos clínicos para usarlo en la leyenda
+datos_clinicos <- as.data.frame(se@elementMetadata@listData)
+pca_data$Group <- datos_clinicos$Group
+pca_data$GENDER <- datos_clinicos$GENDER
+pca_data$SURGERY <- datos_clinicos$SURGERY
+
+
+# Definimos las etiquetas con la varianza explicada y los colores
+x_lab <- paste0("PC1 (", round(var_exp[1], 2), "%)")
+y_lab <- paste0("PC2 (", round(var_exp[2], 2), "%)")
+
+n_colors <- length(unique(pca_data$Group))
+colors <- brewer.pal(n_colors, "Set2")
+
+# Dibujamos el PCA con elipses del 95% de confianza para cada grupo
+ggplot(pca_data, aes(x = PC1, y = PC2, color = SURGERY, shape = Group)) + 
+  geom_point(size = 7, alpha = 0.7) +  
+  stat_ellipse(aes(group = SURGERY, fill = SURGERY), 
+               level = 0.95, geom = "polygon", alpha = 0.1) + 
+  scale_color_manual(values = colors) + 
+  labs(title = "PCA de Metabolitos", 
+       subtitle = "Diferenciación por Grupo y Género", 
+       x = x_lab, y = y_lab) +
+  theme_minimal() +  
+  theme(
+    text = element_text(size = 10),  
+    legend.title = element_text(size = 12),  
+    legend.text = element_text(size = 11),  
+    plot.title = element_text(hjust = 0.5, size = 12, face = "bold"),  
+    plot.subtitle = element_text(hjust = 0.5, size = 10) 
+  ) +
+  geom_text(aes(label = rownames(pca_data)), hjust = 0.5, vjust = -0.5, 
+            size = 2, fontface = "italic", color = "black")  
+```
+
+El análisis de Componentes Principales (PCA) indica que la mayoría de la variabilidad entre las muestras es explicada por el tipo de cirujía, aunque no todas las muestras quedan separadas. La otra variable representada (grupo) no muestra ninguna influencia en la variabilidad de las muestras.
+
+```{r fig.height=5, fig.width=10, message=FALSE, warning=FALSE}
+# Para calcular el peso de las variables en cada componente, lo extraemos de 
+# la columna rotation
+loadings <- as.data.frame(pca_obj$rotation)  
+loadings$Variable <- rownames(loadings)  
+
+# Asignamos un umbral para que filtre las variables que tienen una carga absoluta 
+# superior a 0.2 en PC1 o PC2. 
+threshold <- 0.2  
+top_variables <- loadings %>%
+  filter(abs(PC1) > threshold)  
+
+top_variables2 <- loadings %>%
+  filter(abs(PC1) > threshold | abs(PC2) > threshold)   
+
+# Representamos las variables que más contribuyen en los componentes en un gráfico
+g1 <- ggplot(top_variables, aes(x = reorder(Variable, PC1), y = PC1, fill = "PC1")) + geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  scale_fill_manual(values = c("PC1" = "darkorange")) +
+  labs(title = "Variables con mayor contribución al PC1", x = "Variables", 
+       y = "Peso en PC1") +
+  theme_classic()
+
+g2 <- ggplot(top_variables, aes(x = reorder(Variable, PC2), y = PC2, fill = "PC2")) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  scale_fill_manual(values = c("PC2" = "springgreen3")) +
+  labs(title = "Variables con mayor contribución al PC2", x = "Variables", 
+       y = "Peso en PC2") +
+  theme_classic()
+
+grid.arrange(g1, g2, ncol = 2)
+```
+
+Además, observamos que lo metabolitos asociados al componente componente 1 son Ala_T5, Gly_T5, Gln_T5, Lys_T5 y PC.aa.C34.2_T5, teniendo todos cargas negativas, lo que significa que cuando el valor de los metabolitos disminuye, el valor del PC aumenta. El que todos tengan cargas necativas podría sugerir que se "mueven" en conjunto. Mientras que los metabolitos que más contribuyen al 2 son Gln_T0, Gln_T2, Ala_T4, Gln_T4, PC.aa.C34.2_T4 y Gln_T5, todos con carga negativas a excepción de Gln_T5.
+
+## Análisis de similitud entre muestras
+
+```{r fig.height=4, fig.width=6, message=FALSE, warning=FALSE}
+# Calculamos la distancia euclidiana de la matriz de datos 
+dist_matrix <- dist(assays, method = "euclidean")
+
+# Representamos las distancias en el heatmap
+fviz_dist(dist_matrix)
+
+# Dibujamos el dendograma de las distancias
+plot(hclust(dist_matrix, method = "ward.D2"), labels =  datos_clinicos$SURGERY, 
+     main = "Dendograma de distancias entre muestras",  xlab = "Muestras",
+cex=0.8)
+
+```
+
+El dendograma y heatmap basado en la distancia euclidiana entre muestras indican la tendencia a agruparse los datos según su tipo de cirugía. En la rama principal izquierda del dendograma, mayoritariamente se agrupan las muestras con un tipo de cirugia "tubular". Al contrario que la rama derecha, donde se agrupan mayoritariamente las del tipo de cirugia "by pass".
+
+# DISCUSIÓN
+
+En conclusión, los resultados sugieren que el tipo de cirugía es un factor determinante en las diferencias observadas en las concentraciones de metabolitos, lo que podría tener implicaciones importantes para entender cómo los procedimientos quirúrgicos afectan el perfil metabólico de los pacientes. Tanto el análisis de compoinentes principales como el análisis de similitud entre muestras indican que el tipo de cirugía tiene un padel potencial, pero también abre la puerta a explorar otras variables que podrían interactuar con los metabolitos y aportar más claridad en el análisis.
+
+La distribución de la edad mostró una muestra predominantemente adulta, con una media cercana a los 41 años, lo que sugiere que los participantes son en su mayoría adultos jóvenes. El análisis del género reveló una mayor representación de mujeres, por lo que es necesario más representación masculina.
+
+El análisis reveló que no había valores faltantes en las variables clínicas, pero sí en los datos de expresión de metabolitos. En los datos de expresión de metabolitos, sí se encontraron valores faltantes, lo cual es relevante al momento de interpretar los resultados, ya que estos valores fueron imputados con el valor cero, lo que podría afectar la precisión del análisis.
+
+Además, considero que el hecho de que las mediciones de los metabolitos estén representadas en función del tiempo resulta un tanto confuso y podría mejorarse. Sería más adecuado organizar los datos de manera que se asignen múltiples columnas de muestras para cada tiempo, en lugar de tener una de cada metabolito con los tiempos. El formato ideal sería una fila por cada metabolito y tantas columnas como muestras y tiempo. De esta forma, el tiempo podría ser tratado como una variable independiente contenida en los datos clínicos y sería posible observar de manera más clara cómo cambia la concentración de los metabolitos a lo largo del tiempo, dependiendo de la evolución postoperatoria y del tipo de cirugía.
+
+# CONCLUSIONES
+
+Las conclusiones extraidas de este análisis son:
+
+-   El tipo de cirugía es un factor determinante en las concentraciones de metabolitos medidos después de la intervención.
+
+-   Otras variables podrían estar implicadas en la variabilidad de la concentración de metabolitos entre las muestras, adicional e independientemente del tipo de cirugia.
+
+<!-- -->
+
+-   Es necesario un diseño de los datos óptimo para optimizar al máximo los resultados.
+
+# REFERENCIAS
+
+https://github.com/Mjbeltranrod/Beltran-Rodriguez-Maria-Jose-PEC1 
+
+
+```{r eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+################## PREPARACIÓN DE ARCHIVOS DEL REPOSITORIO
+
+### Guardamos el objeto SummarizedExperiment en un formato binario. 
+save(se, file = "SummarizedExperiment.Rda")
+
+
+### Guardamos los datos en formato texto
+assays <- se@assays@data@listData[["counts"]]
+write.table(assays, file = "datos.txt", sep = "\t", row.names = TRUE, quote = FALSE)
+
+
+### Creamos el archivo Markdown 
+file.create("metadatos.md")
+# Extraemos el colData y mediante kable() le damos el formato tabla de markdown. 
+coldata <- data.frame(se@colData@listData)
+tabla_col <- kable(coldata, format = "markdown")
+# Lo guardamos
+cat(tabla_col, file = "metadatos.md", sep = "\n", append = TRUE) 
+
+# Hacemos lo mismo con rowdata. 
+rowdata <- data.frame(se@elementMetadata@listData)
+tabla_row <- kable(rowdata, format = "markdown")
+# Lo guardamos
+cat(tabla_row, file = "metadatos.md", sep = "\n", append = TRUE) 
+
+```
+
+```{r eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+################# CREACIÓN DEL REPOSITORIO
+nombre <- "Beltran-Rodriguez-Maria-Jose-PEC1"
+ruta_repo <- file.path(getwd(), nombre)
+dir.create(ruta_repo, showWarnings = FALSE)
+
+# Crear un archivo README.md para el repositorio
+readme <- file.path(ruta_repo, "README.md")
+writeLines(c("# ExploreMetaboData", "Repositorio de análisis metabolómico"), readme)
+
+library(gitcreds)
+library(usethis)
+
+# Configuramos mi cuenta
+usethis::use_git_config(user.name = "Mjbeltranrod", user.email = "Mjbeltranrod@gmail.com")
+# Creamos un nuevo proyecto y marcamos la opción de crear un repositorio con Git. 
+# Subimos los archivos que nos interesan al proyecto
+usethis::use_git()
+
+# Creamos un token personal y lo usamos 
+usethis::create_github_token()
+gitcreds::gitcreds_set()
+
+# Ahora conectamos el proyecto al repositorio de Github y se suben los archivos
+usethis::use_github()
+
+# Ya se pueden modificar los archivos desde la app de Git dando commits y push. 
+
+```
